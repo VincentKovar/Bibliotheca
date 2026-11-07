@@ -1,0 +1,6 @@
+{
+  "name": "Bibliotheca: Cozy Isometric Book Organizer",
+  "description": "A cozy 3D isometric book organizing game with upgrades, combo multipliers, synth sound effects, librarian avatar editor, tea room, and day-night cycle.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
