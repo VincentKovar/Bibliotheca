@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { LibrarianAvatar } from '../../types/game';
+import { LibrarianAvatar, WeatherType } from '../../types/game';
+import { synthAudio } from '../../audio/synthAudio';
 import {
   createBookshelf,
   createLibrarianDesk,
@@ -28,6 +29,22 @@ export class Library3DScene {
   private isSoftwareGl: boolean = false;
   private frameId: number = 0;
   private clock: THREE.Clock = new THREE.Clock();
+
+  // Weather state & particles
+  public currentWeather: WeatherType = 'clear';
+  private rainLines!: THREE.LineSegments;
+  private rainPositions!: Float32Array;
+  private rainVelocities!: Float32Array;
+  private leavesGroup!: THREE.Group;
+  private leavesList: {
+    mesh: THREE.Mesh;
+    seed: number;
+    speedY: number;
+    swaySpeed: number;
+    rotSpeed: THREE.Vector3;
+  }[] = [];
+  private snowParticles!: THREE.Points;
+  private snowPositions!: Float32Array;
 
   // Actors & Props
   public librarian!: LibrarianCharacter;
@@ -124,8 +141,9 @@ export class Library3DScene {
     // Register interactive targets for clicking
     this.registerInteractiveTargets();
 
-    // 7. Setup Dust Particles
+    // 7. Setup Dust Particles & Dynamic Weather
     this.setupDustParticles();
+    this.setupWeatherSystems();
 
     // 8. Event listeners
     this.container.addEventListener('pointerdown', this.onPointerDown);
@@ -223,17 +241,41 @@ export class Library3DScene {
     this.sunLight.shadow.normalBias = 0.02;
     this.scene.add(this.sunLight);
 
-    // Bookshelves along North wall
-    const genresList = [
-      { genre: 'fiction', label: 'Fiction (800)', x: -5.8 },
-      { genre: 'philosophy', label: 'Philosophy (100)', x: -3.0 },
-      { genre: 'botany', label: 'Botany & Nature (580)', x: 3.0 },
-      { genre: 'astronomy', label: 'Astronomy & Stars (520)', x: 5.8 },
+    // Bookshelves: 2 on the right wall (North wall, framing windows without blocking them),
+    // and 2 on the fireplace wall (West wall, flanking the stone fireplace hearth on either side)
+    const bookshelfConfigs = [
+      // Right Wall (North Wall: Z = -roomD / 2 + 0.5) - outside the two cathedral windows (at x = -3.0 and x = 3.0)
+      {
+        genre: 'fiction',
+        label: 'Fiction (800)',
+        pos: new THREE.Vector3(-6.2, 0, -roomD / 2 + 0.5),
+        rotY: 0,
+      },
+      {
+        genre: 'astronomy',
+        label: 'Astronomy & Stars (520)',
+        pos: new THREE.Vector3(6.2, 0, -roomD / 2 + 0.5),
+        rotY: 0,
+      },
+      // Fireplace Wall (West Wall: X = -roomW / 2 + 0.5) - flanking either side of the fireplace (at z = -0.8)
+      {
+        genre: 'philosophy',
+        label: 'Philosophy (100)',
+        pos: new THREE.Vector3(-roomW / 2 + 0.5, 0, -3.8),
+        rotY: Math.PI / 2,
+      },
+      {
+        genre: 'botany',
+        label: 'Botany & Nature (580)',
+        pos: new THREE.Vector3(-roomW / 2 + 0.5, 0, 2.2),
+        rotY: Math.PI / 2,
+      },
     ];
 
-    genresList.forEach((item, idx) => {
+    bookshelfConfigs.forEach((item, idx) => {
       const shelf = createBookshelf(item.genre as any, item.label, idx, true);
-      shelf.position.set(item.x, 0, -roomD / 2 + 0.5);
+      shelf.position.copy(item.pos);
+      shelf.rotation.y = item.rotY;
       this.scene.add(shelf);
       this.bookshelves.push(shelf);
     });
@@ -351,6 +393,127 @@ export class Library3DScene {
     this.scene.add(this.dustParticles);
   }
 
+  private setupWeatherSystems() {
+    // 1. Soft Rain setup (LineSegments)
+    const rainCount = 420;
+    const rainGeo = new THREE.BufferGeometry();
+    this.rainPositions = new Float32Array(rainCount * 6); // 2 vertices (6 floats) per streak
+    this.rainVelocities = new Float32Array(rainCount);
+
+    for (let i = 0; i < rainCount; i++) {
+      const x = (Math.random() - 0.5) * 18;
+      const y = Math.random() * 12 + 0.5;
+      const z = (Math.random() - 0.5) * 18;
+      const streakLen = 0.42;
+      const slantX = 0.08;
+      const slantZ = 0.04;
+
+      const idx = i * 6;
+      this.rainPositions[idx] = x;
+      this.rainPositions[idx + 1] = y;
+      this.rainPositions[idx + 2] = z;
+
+      this.rainPositions[idx + 3] = x - slantX;
+      this.rainPositions[idx + 4] = y - streakLen;
+      this.rainPositions[idx + 5] = z - slantZ;
+
+      this.rainVelocities[i] = 14 + Math.random() * 4;
+    }
+
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(this.rainPositions, 3));
+    const rainMat = new THREE.LineBasicMaterial({
+      color: 0xbae6fd,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+    });
+    this.rainLines = new THREE.LineSegments(rainGeo, rainMat);
+    this.rainLines.visible = false;
+    this.scene.add(this.rainLines);
+
+    // 2. Falling Autumn Leaves setup
+    this.leavesGroup = new THREE.Group();
+    this.leavesGroup.name = 'weather_leaves_group';
+    this.leavesGroup.visible = false;
+
+    const leafCols = ['#dc2626', '#fbbf24', '#d97706', '#9a3412', '#b45309', '#f97316'];
+    const leafGeo = new THREE.PlaneGeometry(0.18, 0.24, 1, 1);
+
+    for (let i = 0; i < 140; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: leafCols[i % leafCols.length],
+        side: THREE.DoubleSide,
+        roughness: 0.75,
+      });
+      const leafMesh = new THREE.Mesh(leafGeo, mat);
+      leafMesh.position.set(
+        (Math.random() - 0.5) * 16,
+        Math.random() * 10 + 0.2,
+        (Math.random() - 0.5) * 16
+      );
+      leafMesh.rotation.set(
+        Math.random() * Math.PI,
+        Math.random() * Math.PI,
+        Math.random() * Math.PI
+      );
+      this.leavesGroup.add(leafMesh);
+
+      this.leavesList.push({
+        mesh: leafMesh,
+        seed: i * 1.37,
+        speedY: 0.8 + Math.random() * 0.7,
+        swaySpeed: 1.4 + Math.random() * 1.5,
+        rotSpeed: new THREE.Vector3(
+          (Math.random() - 0.5) * 3,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 3
+        ),
+      });
+    }
+    this.scene.add(this.leavesGroup);
+
+    // 3. Gentle Snow setup (Points)
+    const snowCount = 280;
+    const snowGeo = new THREE.BufferGeometry();
+    this.snowPositions = new Float32Array(snowCount * 3);
+
+    for (let i = 0; i < snowCount; i++) {
+      this.snowPositions[i * 3] = (Math.random() - 0.5) * 16;
+      this.snowPositions[i * 3 + 1] = Math.random() * 11 + 0.2;
+      this.snowPositions[i * 3 + 2] = (Math.random() - 0.5) * 16;
+    }
+
+    snowGeo.setAttribute('position', new THREE.BufferAttribute(this.snowPositions, 3));
+    const snowMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.14,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+    });
+    this.snowParticles = new THREE.Points(snowGeo, snowMat);
+    this.snowParticles.visible = false;
+    this.scene.add(this.snowParticles);
+  }
+
+  public setWeather(weather: WeatherType) {
+    this.currentWeather = weather;
+
+    if (this.rainLines) this.rainLines.visible = weather === 'soft_rain';
+    if (this.leavesGroup) this.leavesGroup.visible = weather === 'falling_leaves';
+    if (this.snowParticles) this.snowParticles.visible = weather === 'gentle_snow';
+
+    // Weather audio integration
+    if (weather === 'soft_rain') {
+      synthAudio.startRainAmbience();
+    } else {
+      synthAudio.stopRainAmbience();
+    }
+
+    // Subtly re-apply lighting mood
+    this.applyDayNightLighting(this.timeOfDayHour);
+  }
+
   private registerInteractiveTargets() {
     this.interactiveMeshes = [
       {
@@ -396,8 +559,8 @@ export class Library3DScene {
       this.desiredCameraTarget.set(-1.4, 1.1, 0.4);
       this.librarian.setDestination(new THREE.Vector3(-0.6, 0, 0.8));
     } else if (preset === 'stacks') {
-      this.desiredCameraPos.set(3, 7, 10);
-      this.desiredCameraTarget.set(0, 2.2, -6.5);
+      this.desiredCameraPos.set(4.5, 7.5, 9);
+      this.desiredCameraTarget.set(-1.0, 2.0, -5.5);
     } else if (preset === 'tea_room') {
       this.desiredCameraPos.set(8.5, 5.5, 6.5);
       this.desiredCameraTarget.set(4.5, 1.2, 1.2);
@@ -472,6 +635,20 @@ export class Library3DScene {
       hemiGround.set('#0f172a');
       sunIntensity = 0.25;
       interiorWarmFactor = 1.5;
+    }
+
+    // Modulate atmospheric lighting by active weather
+    if (this.currentWeather === 'soft_rain') {
+      skyCol.lerp(new THREE.Color('#334155'), 0.55); // Misty overcast slate
+      sunIntensity *= 0.6; // Softer diffuse light
+      interiorWarmFactor *= 1.35; // Lamps and hearth feel even warmer against the rainy gloom
+    } else if (this.currentWeather === 'falling_leaves') {
+      skyCol.lerp(new THREE.Color('#d97706'), 0.18); // Warm golden autumn haze
+      sunCol.lerp(new THREE.Color('#f59e0b'), 0.2);
+    } else if (this.currentWeather === 'gentle_snow') {
+      skyCol.lerp(new THREE.Color('#1e293b'), 0.35); // Winter twilight
+      sunCol.lerp(new THREE.Color('#e0f2fe'), 0.3);
+      interiorWarmFactor *= 1.4; // Fireplace glow stands out against snow
     }
 
     this.sunLight.color.copy(sunCol);
@@ -586,6 +763,79 @@ export class Library3DScene {
         let y = posAttr.getY(i) - dt * 0.15;
         if (y < 0.2) y = 6.0;
         posAttr.setY(i, y);
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    // 1. Soft Rain Animation
+    if (this.currentWeather === 'soft_rain' && this.rainLines) {
+      const posAttr = this.rainLines.geometry.attributes.position as THREE.BufferAttribute;
+      const count = posAttr.count / 2;
+      for (let i = 0; i < count; i++) {
+        const idx = i * 6;
+        let y = this.rainPositions[idx + 1] - this.rainVelocities[i] * dt;
+        let x = this.rainPositions[idx] - 1.2 * dt;
+        let z = this.rainPositions[idx + 2] - 0.7 * dt;
+
+        if (y < 0.1) {
+          y = 10.0 + Math.random() * 3.0;
+          x = (Math.random() - 0.5) * 18;
+          z = (Math.random() - 0.5) * 18;
+        }
+
+        const streakLen = 0.42;
+        const slantX = 0.08;
+        const slantZ = 0.04;
+
+        this.rainPositions[idx] = x;
+        this.rainPositions[idx + 1] = y;
+        this.rainPositions[idx + 2] = z;
+
+        this.rainPositions[idx + 3] = x - slantX;
+        this.rainPositions[idx + 4] = y - streakLen;
+        this.rainPositions[idx + 5] = z - slantZ;
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    // 2. Falling Autumn Leaves Animation
+    if (this.currentWeather === 'falling_leaves' && this.leavesGroup) {
+      for (let i = 0; i < this.leavesList.length; i++) {
+        const item = this.leavesList[i];
+        item.mesh.position.y -= item.speedY * dt;
+        item.mesh.position.x += Math.sin(time * item.swaySpeed + item.seed) * dt * 0.75;
+        item.mesh.position.z += Math.cos(time * item.swaySpeed * 0.8 + item.seed) * dt * 0.5;
+
+        item.mesh.rotation.x += item.rotSpeed.x * dt;
+        item.mesh.rotation.y += item.rotSpeed.y * dt;
+        item.mesh.rotation.z += item.rotSpeed.z * dt;
+
+        if (item.mesh.position.y < 0.05) {
+          item.mesh.position.y = 8.5 + Math.random() * 3.5;
+          item.mesh.position.x = (Math.random() - 0.5) * 16;
+          item.mesh.position.z = (Math.random() - 0.5) * 16;
+        }
+      }
+    }
+
+    // 3. Gentle Snow Animation
+    if (this.currentWeather === 'gentle_snow' && this.snowParticles) {
+      const posAttr = this.snowParticles.geometry.attributes.position as THREE.BufferAttribute;
+      const count = posAttr.count;
+      for (let i = 0; i < count; i++) {
+        let y = this.snowPositions[i * 3 + 1] - dt * 0.85;
+        let x = this.snowPositions[i * 3] + Math.sin(time * 1.5 + i) * dt * 0.35;
+        let z = this.snowPositions[i * 3 + 2] + Math.cos(time * 1.2 + i) * dt * 0.25;
+
+        if (y < 0.1) {
+          y = 9.5 + Math.random() * 2.5;
+          x = (Math.random() - 0.5) * 16;
+          z = (Math.random() - 0.5) * 16;
+        }
+
+        this.snowPositions[i * 3] = x;
+        this.snowPositions[i * 3 + 1] = y;
+        this.snowPositions[i * 3 + 2] = z;
       }
       posAttr.needsUpdate = true;
     }

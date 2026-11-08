@@ -1,5 +1,6 @@
 import { CloudSaveData, LibrarianAvatar, GameStats } from '../types/game';
 import { INITIAL_TBR_BOOKS, INITIAL_LOANED_OUT_RECORDS, INITIAL_BORROWED_IN_RECORDS, generateRandomBook } from './bookGenerator';
+import { generateDailyQuests, getTodayDateString } from './questGenerator';
 
 const CLOUD_SAVE_KEY_PREFIX = 'bibliotheca_cloud_slot_';
 const ACTIVE_SLOT_KEY = 'bibliotheca_active_slot_id';
@@ -30,6 +31,7 @@ export const DEFAULT_STATS: GameStats = {
 };
 
 export function createInitialCloudData(slotId: number = 1, slotName: string = 'Main Archive'): CloudSaveData {
+  const today = getTodayDateString();
   return {
     slotId,
     slotName,
@@ -41,7 +43,7 @@ export function createInitialCloudData(slotId: number = 1, slotName: string = 'M
     inventoryBooks: [
       generateRandomBook('fiction'),
       generateRandomBook('botany'),
-      generateRandomBook('philosomy' as any),
+      generateRandomBook('philosophy' as any),
       generateRandomBook('astronomy'),
     ],
     tbrBooks: [...INITIAL_TBR_BOOKS],
@@ -50,6 +52,9 @@ export function createInitialCloudData(slotId: number = 1, slotName: string = 'M
     activeBuff: null,
     timeOfDayHour: 15.5, // 3:30 PM golden afternoon
     version: 1,
+    dailyQuests: generateDailyQuests(today),
+    lastQuestDate: today,
+    allQuestsClaimedBonus: false,
   };
 }
 

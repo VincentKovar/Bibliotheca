@@ -8,11 +8,15 @@ class SynthAudioEngine {
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
+  private rainGain: GainNode | null = null;
+  private rainSource: AudioBufferSourceNode | null = null;
   private isMuted: boolean = false;
   private sfxVolume: number = 0.7;
   private musicVolume: number = 0.35;
+  private rainVolume: number = 0.25;
   private ambientTimer: number | null = null;
   private isMusicPlaying: boolean = false;
+  private isRainPlaying: boolean = false;
 
   private init() {
     if (this.ctx) return;
@@ -30,6 +34,10 @@ class SynthAudioEngine {
     this.musicGain = this.ctx.createGain();
     this.musicGain.gain.setValueAtTime(this.musicVolume, this.ctx.currentTime);
     this.musicGain.connect(this.masterGain);
+
+    this.rainGain = this.ctx.createGain();
+    this.rainGain.gain.setValueAtTime(0, this.ctx.currentTime);
+    this.rainGain.connect(this.masterGain);
   }
 
   public ensureContext() {
@@ -372,6 +380,71 @@ class SynthAudioEngine {
       osc.start(noteTime);
       osc.stop(noteTime + duration + 0.1);
     });
+  }
+
+  // Procedural Cozy Rain ambience (soft pink noise filtered to simulate raindrops against window glass)
+  public startRainAmbience() {
+    this.ensureContext();
+    if (!this.ctx || !this.rainGain || this.isRainPlaying) return;
+    this.isRainPlaying = true;
+
+    // Create 3 seconds of pink noise buffer to loop seamlessly
+    const bufferSize = this.ctx.sampleRate * 3;
+    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+
+    for (let i = 0; i < bufferSize; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      output[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.08;
+      b6 = white * 0.115926;
+    }
+
+    this.rainSource = this.ctx.createBufferSource();
+    this.rainSource.buffer = noiseBuffer;
+    this.rainSource.loop = true;
+
+    // Dual filtering for warm patter sound through leaded glass
+    const lowpass = this.ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.setValueAtTime(850, this.ctx.currentTime);
+
+    const highpass = this.ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.setValueAtTime(120, this.ctx.currentTime);
+
+    this.rainSource.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(this.rainGain);
+
+    this.rainGain.gain.setValueAtTime(0.001, this.ctx.currentTime);
+    this.rainGain.gain.linearRampToValueAtTime(this.rainVolume, this.ctx.currentTime + 1.5);
+
+    this.rainSource.start();
+  }
+
+  public stopRainAmbience() {
+    if (!this.isRainPlaying || !this.rainGain || !this.ctx) return;
+    this.isRainPlaying = false;
+    this.rainGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.5);
+
+    setTimeout(() => {
+      if (this.rainSource && !this.isRainPlaying) {
+        try {
+          this.rainSource.stop();
+          this.rainSource.disconnect();
+        } catch {
+          // ignore
+        }
+        this.rainSource = null;
+      }
+    }, 600);
   }
 }
 

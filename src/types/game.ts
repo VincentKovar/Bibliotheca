@@ -13,6 +13,8 @@ export type BookRarity =
   | 'vintage'
   | 'mythic';
 
+export type WeatherType = 'clear' | 'soft_rain' | 'falling_leaves' | 'gentle_snow';
+
 export type BookCondition = 'pristine' | 'well_loved' | 'tattered' | 'needs_restoration';
 
 export interface BookItem {
@@ -127,6 +129,31 @@ export interface GameStats {
   nextLevelExp: number;
 }
 
+export type QuestType =
+  | 'shelve_genre'
+  | 'shelve_total'
+  | 'restore_vintage'
+  | 'reach_combo'
+  | 'brew_tea'
+  | 'collect_loan'
+  | 'deliver_tbr';
+
+export interface DailyQuest {
+  id: string;
+  title: string;
+  description: string;
+  questType: QuestType;
+  targetCount: number;
+  currentCount: number;
+  completed: boolean;
+  claimed: boolean;
+  rewardPoints: number;
+  rewardRibbons: number;
+  genreTarget?: BookGenre;
+  targetCombo?: number;
+  iconName: string;
+}
+
 export interface CloudSaveData {
   slotId: number;
   slotName: string;
@@ -142,4 +169,7 @@ export interface CloudSaveData {
   activeBuff: ActiveTeaBuff | null;
   timeOfDayHour: number; // 0 to 24 (e.g. 14.5 is 2:30 PM)
   version: number;
+  dailyQuests?: DailyQuest[];
+  lastQuestDate?: string;
+  allQuestsClaimedBonus?: boolean;
 }

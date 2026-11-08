@@ -16,8 +16,13 @@ import {
   Music,
   Pause,
   Clock,
+  CloudRain,
+  Snowflake,
+  Leaf,
+  Wind,
+  Scroll,
 } from 'lucide-react';
-import { GameStats, ActiveTeaBuff } from '../types/game';
+import { GameStats, ActiveTeaBuff, WeatherType, DailyQuest } from '../types/game';
 import { CameraPreset } from '../game/three/scene';
 import { synthAudio } from '../audio/synthAudio';
 
@@ -28,6 +33,10 @@ interface HUDProps {
   activeBuff: ActiveTeaBuff | null;
   timeOfDayHour: number;
   onSetTimeOfDay: (hour: number) => void;
+  weather: WeatherType;
+  onSetWeather: (weather: WeatherType) => void;
+  autoWeather: boolean;
+  onToggleAutoWeather: () => void;
   cloudSyncStatus: 'synced' | 'saving' | 'offline';
   isMuted: boolean;
   onToggleMute: () => void;
@@ -35,8 +44,10 @@ interface HUDProps {
   onToggleLoFi: () => void;
   activeCameraPreset: CameraPreset;
   onSelectCameraPreset: (preset: CameraPreset) => void;
-  onOpenStation: (station: 'desk' | 'tbr' | 'tea' | 'vitrine' | 'avatar' | 'upgrades') => void;
+  onOpenStation: (station: 'desk' | 'tbr' | 'tea' | 'vitrine' | 'avatar' | 'upgrades' | 'quests') => void;
   onOpenPause: () => void;
+  dailyQuests: DailyQuest[];
+  questToast: string | null;
 }
 
 export const HUD: React.FC<HUDProps> = ({
@@ -46,6 +57,10 @@ export const HUD: React.FC<HUDProps> = ({
   activeBuff,
   timeOfDayHour,
   onSetTimeOfDay,
+  weather,
+  onSetWeather,
+  autoWeather,
+  onToggleAutoWeather,
   cloudSyncStatus,
   isMuted,
   onToggleMute,
@@ -55,8 +70,12 @@ export const HUD: React.FC<HUDProps> = ({
   onSelectCameraPreset,
   onOpenStation,
   onOpenPause,
+  dailyQuests,
+  questToast,
 }) => {
   const [isDockCollapsed, setIsDockCollapsed] = React.useState(false);
+  const completedQuestsCount = dailyQuests ? dailyQuests.filter((q) => q.completed).length : 0;
+  const unclaimedQuestsCount = dailyQuests ? dailyQuests.filter((q) => q.completed && !q.claimed).length : 0;
 
   // Keyboard shortcut 'H' to toggle dock
   React.useEffect(() => {
@@ -86,6 +105,14 @@ export const HUD: React.FC<HUDProps> = ({
 
   return (
     <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4 md:p-6 z-30 select-none">
+      {/* Toast Notification Banner for Completed Daily Quests */}
+      {questToast && (
+        <div className="pointer-events-auto absolute top-16 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2.5 px-4 py-2 rounded-2xl bg-gradient-to-r from-amber-900 via-stone-900 to-amber-900 border border-amber-400 text-amber-100 shadow-2xl shadow-amber-950/80 animate-bounce">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="font-cinzel text-xs font-semibold">{questToast}</span>
+        </div>
+      )}
+
       {/* TOP PERIMETER STATUS BAR */}
       <div className="flex items-start justify-between w-full gap-2">
         {/* Top-Left: Library Level & Active Buff */}
@@ -136,6 +163,31 @@ export const HUD: React.FC<HUDProps> = ({
               </span>
             </div>
           )}
+
+          {/* Daily Quests Quick Button */}
+          <button
+            onClick={() => {
+              synthAudio.playButtonClick();
+              onOpenStation('quests');
+            }}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-xs shadow-md transition-all cursor-pointer ${
+              unclaimedQuestsCount > 0
+                ? 'bg-amber-900/95 border-amber-400 text-amber-100 shadow-amber-950/60 ring-1 ring-amber-400/50 hover:bg-amber-800'
+                : 'bg-stone-900/90 border-amber-900/40 text-stone-300 hover:text-amber-200 hover:border-amber-700/50'
+            }`}
+          >
+            <Scroll className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-cinzel text-xs font-semibold">Daily Quests</span>
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+                unclaimedQuestsCount > 0
+                  ? 'bg-amber-400 text-amber-950 font-bold animate-pulse'
+                  : 'bg-stone-800 text-amber-300/80 border border-stone-700'
+              }`}
+            >
+              {unclaimedQuestsCount > 0 ? 'Claim Reward!' : `${completedQuestsCount}/3`}
+            </span>
+          </button>
         </div>
 
         {/* Top-Center: Relaxing Day-Night Time of Day & Presets */}
@@ -199,6 +251,86 @@ export const HUD: React.FC<HUDProps> = ({
               }`}
             >
               Night
+            </button>
+          </div>
+
+          <div className="h-4 w-px bg-stone-700/60 mx-1" />
+
+          {/* Dynamic Weather Visual Effects Controls */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                synthAudio.playButtonClick();
+                onToggleAutoWeather();
+              }}
+              title={autoWeather ? 'Auto Weather Dynamics (changes with day/night or random breeze)' : 'Auto Weather Paused (Manual mode)'}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                autoWeather
+                  ? 'bg-amber-900/80 text-amber-200 border border-amber-600/50 font-semibold'
+                  : 'text-stone-500 hover:text-stone-300'
+              }`}
+            >
+              Auto
+            </button>
+
+            <button
+              onClick={() => {
+                synthAudio.playButtonClick();
+                onSetWeather('soft_rain');
+              }}
+              title="Soft Rain on Windows"
+              className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                weather === 'soft_rain'
+                  ? 'bg-blue-900/70 text-blue-200 border border-blue-500/50'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <CloudRain className="w-3.5 h-3.5 text-blue-400" />
+            </button>
+
+            <button
+              onClick={() => {
+                synthAudio.playButtonClick();
+                onSetWeather('falling_leaves');
+              }}
+              title="Falling Autumn Leaves"
+              className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                weather === 'falling_leaves'
+                  ? 'bg-amber-900/70 text-amber-200 border border-amber-500/50'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <Leaf className="w-3.5 h-3.5 text-amber-400" />
+            </button>
+
+            <button
+              onClick={() => {
+                synthAudio.playButtonClick();
+                onSetWeather('gentle_snow');
+              }}
+              title="Gentle Falling Snow"
+              className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                weather === 'gentle_snow'
+                  ? 'bg-indigo-900/70 text-indigo-200 border border-indigo-400/50'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <Snowflake className="w-3.5 h-3.5 text-sky-300" />
+            </button>
+
+            <button
+              onClick={() => {
+                synthAudio.playButtonClick();
+                onSetWeather('clear');
+              }}
+              title="Clear Serene Skies"
+              className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                weather === 'clear'
+                  ? 'bg-stone-800 text-amber-200 border border-stone-600'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <Sun className="w-3.5 h-3.5 text-amber-400" />
             </button>
           </div>
         </div>
@@ -357,6 +489,30 @@ export const HUD: React.FC<HUDProps> = ({
               >
                 <Award className="w-3.5 h-3.5 text-yellow-400" />
                 <span>Upgrades</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  synthAudio.playButtonClick();
+                  onOpenStation('quests');
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-cinzel font-medium transition-all cursor-pointer relative ${
+                  unclaimedQuestsCount > 0
+                    ? 'bg-amber-900 text-amber-100 border border-amber-400 shadow-md ring-1 ring-amber-400/50 hover:bg-amber-800'
+                    : 'bg-stone-800/90 hover:bg-stone-700/90 text-stone-200 border border-stone-700/60'
+                }`}
+              >
+                <Scroll className="w-3.5 h-3.5 text-amber-400" />
+                <span>Daily Quests</span>
+                <span
+                  className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
+                    unclaimedQuestsCount > 0
+                      ? 'bg-amber-400 text-amber-950 font-bold'
+                      : 'bg-stone-900 text-stone-400'
+                  }`}
+                >
+                  {unclaimedQuestsCount > 0 ? '✦' : `${completedQuestsCount}/3`}
+                </span>
               </button>
             </div>
 

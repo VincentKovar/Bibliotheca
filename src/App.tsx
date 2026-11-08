@@ -9,6 +9,8 @@ import {
   ActiveTeaBuff,
   TeaRecipe,
   LibraryUpgrade,
+  WeatherType,
+  DailyQuest,
 } from './types/game';
 import {
   cloudSaveService,
@@ -19,6 +21,12 @@ import {
 import { Library3DScene, CameraPreset, StationHit } from './game/three/scene';
 import { synthAudio } from './audio/synthAudio';
 import { generateRandomBook, VINTAGE_BOOKS_CATALOG } from './game/bookGenerator';
+import {
+  generateDailyQuests,
+  getTodayDateString,
+  rerollQuest,
+  ALL_QUESTS_DAILY_BONUS,
+} from './game/questGenerator';
 
 import { TitleScreen } from './components/TitleScreen';
 import { HUD } from './components/HUD';
@@ -29,12 +37,13 @@ import { AvatarEditorModal } from './components/AvatarEditorModal';
 import { UpgradesModal } from './components/UpgradesModal';
 import { VintageCodexModal } from './components/VintageCodexModal';
 import { PauseModal } from './components/PauseModal';
+import { DailyQuestsModal } from './components/DailyQuestsModal';
 
 export default function App() {
   // Game Shell state
   const [gameState, setGameState] = useState<'title' | 'playing' | 'paused'>('title');
   const [activeModal, setActiveModal] = useState<
-    null | 'desk' | 'tbr' | 'tea' | 'vitrine' | 'avatar' | 'upgrades'
+    null | 'desk' | 'tbr' | 'tea' | 'vitrine' | 'avatar' | 'upgrades' | 'quests'
   >(null);
 
   // Active Save Slot & Data
@@ -58,11 +67,29 @@ export default function App() {
   const [activeBuff, setActiveBuff] = useState<ActiveTeaBuff | null>(saveData.activeBuff);
   const [timeOfDayHour, setTimeOfDayHour] = useState<number>(saveData.timeOfDayHour);
 
-  // Audio & UI
+  // Daily Quests system state
+  const [dailyQuests, setDailyQuests] = useState<DailyQuest[]>(() => {
+    const today = getTodayDateString();
+    if (saveData.dailyQuests && saveData.lastQuestDate === today) {
+      return saveData.dailyQuests;
+    }
+    return generateDailyQuests(today);
+  });
+  const [lastQuestDate, setLastQuestDate] = useState<string>(
+    () => saveData.lastQuestDate || getTodayDateString()
+  );
+  const [allQuestsClaimedBonus, setAllQuestsClaimedBonus] = useState<boolean>(
+    () => saveData.allQuestsClaimedBonus || false
+  );
+  const [questToast, setQuestToast] = useState<string | null>(null);
+
+  // Audio, Weather & UI
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLoFiPlaying, setIsLoFiPlaying] = useState<boolean>(false);
   const [activeCameraPreset, setActiveCameraPreset] = useState<CameraPreset>('overview');
   const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'saving' | 'offline'>('synced');
+  const [weather, setWeather] = useState<WeatherType>('clear');
+  const [autoWeather, setAutoWeather] = useState<boolean>(true);
 
   // Combo system
   const [comboMultiplier, setComboMultiplier] = useState<number>(1.0);
@@ -112,6 +139,7 @@ export default function App() {
         handleStationClicked
       );
       sceneRef.current.setTimeOfDay(timeOfDayHour);
+      sceneRef.current.setWeather(weather);
     }
 
     return () => {
@@ -142,6 +170,38 @@ export default function App() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Dynamic Weather Visual Effects: transitions based on day-night cycle & gentle random chance
+  useEffect(() => {
+    if (!autoWeather) return;
+
+    const weatherTimer = setInterval(() => {
+      const hour = timeOfDayHour;
+      let candidates: WeatherType[] = [];
+
+      if (hour >= 5 && hour < 9) {
+        // Dawn: fresh morning air with falling leaves or golden clarity
+        candidates = ['clear', 'falling_leaves', 'falling_leaves', 'clear'];
+      } else if (hour >= 9 && hour < 17) {
+        // Crisp afternoon: cozy soft rain on windows, drifting leaves, or clear light
+        candidates = ['clear', 'clear', 'soft_rain', 'falling_leaves'];
+      } else if (hour >= 17 && hour < 20) {
+        // Amber dusk: autumn leaves drifting through warm sunset or soft rain
+        candidates = ['falling_leaves', 'falling_leaves', 'soft_rain', 'clear'];
+      } else {
+        // Midnight Starlight: gentle quiet snowfall or peaceful rain against the hearth
+        candidates = ['gentle_snow', 'gentle_snow', 'soft_rain', 'clear'];
+      }
+
+      const nextWeather = candidates[Math.floor(Math.random() * candidates.length)];
+      setWeather(nextWeather);
+      if (sceneRef.current) {
+        sceneRef.current.setWeather(nextWeather);
+      }
+    }, 45000); // Transitions every 45s for dynamic coziness
+
+    return () => clearInterval(weatherTimer);
+  }, [autoWeather, timeOfDayHour]);
 
   // Combo timer countdown tick
   useEffect(() => {
@@ -175,6 +235,132 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeBuff]);
 
+  // Check for daily quests calendar rollover
+  useEffect(() => {
+    const checkCalendarDate = () => {
+      const today = getTodayDateString();
+      if (today !== lastQuestDate) {
+        setLastQuestDate(today);
+        setDailyQuests(generateDailyQuests(today));
+        setAllQuestsClaimedBonus(false);
+        setQuestToast('📜 New Daily Quests arrived for today!');
+        setTimeout(() => setQuestToast(null), 5000);
+      }
+    };
+    checkCalendarDate();
+    const interval = setInterval(checkCalendarDate, 60000);
+    return () => clearInterval(interval);
+  }, [lastQuestDate]);
+
+  // Record daily quest progress
+  const recordQuestProgress = useCallback(
+    (
+      type: DailyQuest['questType'],
+      count: number = 1,
+      extra?: { genre?: BookGenre; combo?: number }
+    ) => {
+      setDailyQuests((prevQuests) => {
+        let anyCompletedJustNow = false;
+        let completedQuestTitle = '';
+
+        const updated = prevQuests.map((quest) => {
+          if (quest.completed || quest.questType !== type) {
+            return quest;
+          }
+
+          if (type === 'shelve_genre') {
+            if (quest.genreTarget && extra?.genre && quest.genreTarget !== extra.genre) {
+              return quest;
+            }
+          }
+
+          if (type === 'reach_combo') {
+            if (!extra?.combo || extra.combo < (quest.targetCombo || quest.targetCount)) {
+              return quest;
+            }
+          }
+
+          const nextCount =
+            type === 'reach_combo'
+              ? quest.targetCount
+              : Math.min(quest.targetCount, quest.currentCount + count);
+
+          const isNowCompleted = nextCount >= quest.targetCount;
+
+          if (isNowCompleted && !quest.completed) {
+            anyCompletedJustNow = true;
+            completedQuestTitle = quest.title;
+          }
+
+          return {
+            ...quest,
+            currentCount: nextCount,
+            completed: isNowCompleted,
+          };
+        });
+
+        if (anyCompletedJustNow) {
+          synthAudio.playVintageRestoration();
+          confetti({
+            particleCount: 50,
+            spread: 75,
+            origin: { y: 0.6 },
+            colors: ['#f59e0b', '#fbbf24', '#10b981', '#38bdf8', '#c084fc'],
+          });
+          setQuestToast(`📜 Quest Complete: "${completedQuestTitle}"!`);
+          setTimeout(() => {
+            setQuestToast(null);
+          }, 4500);
+        }
+
+        return updated;
+      });
+    },
+    []
+  );
+
+  // Claim single quest reward
+  const handleClaimQuestReward = (questId: string) => {
+    const quest = dailyQuests.find((q) => q.id === questId);
+    if (!quest || !quest.completed || quest.claimed) return;
+
+    setDailyQuests((prev) =>
+      prev.map((q) => (q.id === questId ? { ...q, claimed: true } : q))
+    );
+
+    setStats((prev) => ({
+      ...prev,
+      deweyPoints: prev.deweyPoints + quest.rewardPoints,
+      gildedRibbons: prev.gildedRibbons + quest.rewardRibbons,
+      experiencePoints: prev.experiencePoints + Math.round(quest.rewardPoints / 2),
+    }));
+  };
+
+  // Claim Grand Daily bonus
+  const handleClaimAllBonus = () => {
+    if (allQuestsClaimedBonus) return;
+    const allDone = dailyQuests.length > 0 && dailyQuests.every((q) => q.completed);
+    if (!allDone) return;
+
+    setAllQuestsClaimedBonus(true);
+    setStats((prev) => ({
+      ...prev,
+      deweyPoints: prev.deweyPoints + ALL_QUESTS_DAILY_BONUS.deweyPoints,
+      gildedRibbons: prev.gildedRibbons + ALL_QUESTS_DAILY_BONUS.gildedRibbons,
+      experiencePoints: prev.experiencePoints + 200,
+    }));
+  };
+
+  // Reroll single quest
+  const handleRerollQuest = (questId: string) => {
+    const replacement = rerollQuest(questId, dailyQuests);
+    if (!replacement) return;
+
+    setDailyQuests((prev) =>
+      prev.map((q) => (q.id === questId ? replacement : q))
+    );
+  };
+
   // Auto-Save progress to Cloud periodically
   useEffect(() => {
     const autoSaveTimer = setInterval(() => {
@@ -194,6 +380,9 @@ export default function App() {
         borrowedInRecords,
         activeBuff,
         timeOfDayHour,
+        dailyQuests,
+        lastQuestDate,
+        allQuestsClaimedBonus,
         version: 1,
       };
 
@@ -214,6 +403,9 @@ export default function App() {
     borrowedInRecords,
     activeBuff,
     timeOfDayHour,
+    dailyQuests,
+    lastQuestDate,
+    allQuestsClaimedBonus,
   ]);
 
   // Handle Global Keys (Esc to pause/unpause, Space)
@@ -255,6 +447,17 @@ export default function App() {
     setActiveBuff(data.activeBuff);
     setTimeOfDayHour(data.timeOfDayHour);
 
+    const today = getTodayDateString();
+    if (data.dailyQuests && data.lastQuestDate === today) {
+      setDailyQuests(data.dailyQuests);
+      setLastQuestDate(data.lastQuestDate);
+      setAllQuestsClaimedBonus(data.allQuestsClaimedBonus || false);
+    } else {
+      setDailyQuests(generateDailyQuests(today));
+      setLastQuestDate(today);
+      setAllQuestsClaimedBonus(false);
+    }
+
     if (sceneRef.current) {
       sceneRef.current.librarian.updateConfig(data.avatar);
       sceneRef.current.setTimeOfDay(data.timeOfDayHour);
@@ -295,6 +498,11 @@ export default function App() {
 
     // Remove from inventory
     setInventoryBooks((prev) => prev.filter((b) => b.id !== book.id));
+
+    // Track daily quests
+    recordQuestProgress('shelve_genre', 1, { genre: book.genre });
+    recordQuestProgress('shelve_total', 1);
+    recordQuestProgress('reach_combo', 1, { combo: nextCombo });
 
     // Update stats and handle Level Up
     setStats((prev) => {
@@ -353,6 +561,7 @@ export default function App() {
       vintageBooksRestored: prev.vintageBooksRestored + 1,
       gildedRibbons: prev.gildedRibbons + 1,
     }));
+    recordQuestProgress('restore_vintage', 1);
   };
 
   // Pull new books to sorting desk
@@ -371,6 +580,7 @@ export default function App() {
   const handleMoveTBRToDesk = (book: BookItem) => {
     setTbrBooks((prev) => prev.filter((b) => b.id !== book.id));
     setInventoryBooks((prev) => [book, ...prev]);
+    recordQuestProgress('deliver_tbr', 1);
   };
 
   // Loan: Reminder
@@ -397,6 +607,7 @@ export default function App() {
     }));
 
     setLoanedOutRecords((prev) => prev.filter((r) => r.id !== recordId));
+    recordQuestProgress('collect_loan', 1);
   };
 
   // Borrowed In: Catalog
@@ -424,6 +635,7 @@ export default function App() {
     };
     setActiveBuff(newBuff);
     setStats((prev) => ({ ...prev, teasBrewed: prev.teasBrewed + 1 }));
+    recordQuestProgress('brew_tea', 1);
   };
 
   // Purchase Upgrade
@@ -477,6 +689,9 @@ export default function App() {
       borrowedInRecords,
       activeBuff,
       timeOfDayHour,
+      dailyQuests,
+      lastQuestDate,
+      allQuestsClaimedBonus,
       version: 1,
     };
     await cloudSaveService.saveToCloud(currentSave);
@@ -497,6 +712,9 @@ export default function App() {
       borrowedInRecords,
       activeBuff,
       timeOfDayHour,
+      dailyQuests,
+      lastQuestDate,
+      allQuestsClaimedBonus,
       version: 1,
     };
     cloudSaveService.exportSaveAsJSON(currentSave);
@@ -518,6 +736,17 @@ export default function App() {
         setBorrowedInRecords(imported.borrowedInRecords);
         setActiveBuff(imported.activeBuff);
         setTimeOfDayHour(imported.timeOfDayHour);
+
+        const today = getTodayDateString();
+        if (imported.dailyQuests && imported.lastQuestDate === today) {
+          setDailyQuests(imported.dailyQuests);
+          setLastQuestDate(imported.lastQuestDate);
+          setAllQuestsClaimedBonus(imported.allQuestsClaimedBonus || false);
+        } else {
+          setDailyQuests(generateDailyQuests(today));
+          setLastQuestDate(today);
+          setAllQuestsClaimedBonus(false);
+        }
 
         if (sceneRef.current) {
           sceneRef.current.librarian.updateConfig(imported.avatar);
@@ -557,6 +786,14 @@ export default function App() {
             setTimeOfDayHour(hour);
             if (sceneRef.current) sceneRef.current.setTimeOfDay(hour);
           }}
+          weather={weather}
+          onSetWeather={(w) => {
+            setWeather(w);
+            setAutoWeather(false); // Player manually chose a weather
+            if (sceneRef.current) sceneRef.current.setWeather(w);
+          }}
+          autoWeather={autoWeather}
+          onToggleAutoWeather={() => setAutoWeather((prev) => !prev)}
           cloudSyncStatus={cloudSyncStatus}
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
@@ -582,13 +819,28 @@ export default function App() {
               setActiveModal('avatar');
             } else if (station === 'upgrades') {
               setActiveModal('upgrades');
+            } else if (station === 'quests') {
+              setActiveModal('quests');
             }
           }}
           onOpenPause={() => setGameState('paused')}
+          dailyQuests={dailyQuests}
+          questToast={questToast}
         />
       )}
 
       {/* 4. Interactive Modals */}
+      {activeModal === 'quests' && (
+        <DailyQuestsModal
+          quests={dailyQuests}
+          allQuestsClaimedBonus={allQuestsClaimedBonus}
+          onClaimQuestReward={handleClaimQuestReward}
+          onClaimAllBonus={handleClaimAllBonus}
+          onRerollQuest={handleRerollQuest}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
       {activeModal === 'desk' && (
         <BookOrganizerModal
           books={inventoryBooks}
